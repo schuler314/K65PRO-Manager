@@ -129,6 +129,42 @@
                     
                     setServicesList(srvList);
                     addLog(`Discovered ${services.length} services.`, 'success');
+
+                    // Auto-subscribe to known Notify characteristics to keep connection alive
+                    try {
+                        addLog("Attempting auto-handshake (subscribing to streams)...", "info");
+                        await new Promise(r => setTimeout(r, 500)); // Small delay for GATT to settle
+                        
+                        const controlService = await server.getPrimaryService('00006287-3c17-d293-8e48-14fe2e4da212');
+                        const notifyChar = await controlService.getCharacteristic('00006487-3c17-d293-8e48-14fe2e4da212');
+                        await notifyChar.startNotifications();
+                        notifyChar.addEventListener('characteristicvaluechanged', (e) => {
+                            const v = e.target.value;
+                            addLog(`Watch Event [6487]: ${Array.from(new Uint8Array(v.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`, 'info');
+                        });
+                        addLog("Handshake 1/3 complete (6487 bound)", "success");
+
+                        const healthService = await server.getPrimaryService(0xfee7);
+                        const healthNotifyChar = await healthService.getCharacteristic('0000fea1-0000-1000-8000-00805f9b34fb');
+                        await healthNotifyChar.startNotifications();
+                        healthNotifyChar.addEventListener('characteristicvaluechanged', (e) => {
+                             const v = e.target.value;
+                             addLog(`Health Event [fea1]: ${Array.from(new Uint8Array(v.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`, 'info');
+                        });
+                        addLog("Handshake 2/3 complete (fea1 bound)", "success");
+
+                        const dataService = await server.getPrimaryService('000001ff-3c17-d293-8e48-14fe2e4da212');
+                        const dataNotifyChar = await dataService.getCharacteristic('0000ff03-0000-1000-8000-00805f9b34fb');
+                        await dataNotifyChar.startNotifications();
+                        dataNotifyChar.addEventListener('characteristicvaluechanged', (e) => {
+                             const v = e.target.value;
+                             addLog(`Data Event [ff03]: ${Array.from(new Uint8Array(v.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`, 'info');
+                        });
+                        addLog("Handshake 3/3 complete (ff03 bound)", "success");
+
+                    } catch(e) {
+                        addLog(`Handshake skipped/failed: ${e.message}`, "warn");
+                    }
                     
                 } catch (error) {
                     addLog(`Connection failed: ${error.message}`, 'error');
@@ -245,6 +281,50 @@
                     addLog(`Read Success: HEX(${hex}) | TEXT(${text.replace(/[\x00-\x1F\x7F]/g, '.')})`, 'success');
                 } catch (e) {
                     addLog(`Read Error: ${e.message}`, 'error');
+                }
+            };
+
+            const handleWriteCharacteristic = async (serviceUuid, charUuid) => {
+                if (!bleServer) return;
+                const input = prompt("Enter HEX payload to write (e.g., 01 0A FF):");
+                if (!input) return;
+                
+                try {
+                    addLog(`Writing to [${charUuid.split('-')[0]}]...`, 'info');
+                    const service = await bleServer.getPrimaryService(serviceUuid);
+                    const characteristic = await service.getCharacteristic(charUuid);
+                    
+                    const hexArray = input.replace(/\s/g, '').match(/.{1,2}/g);
+                    if(!hexArray) throw new Error("Invalid hex format");
+                    const bytes = new Uint8Array(hexArray.map(byte => parseInt(byte, 16)));
+                    
+                    await characteristic.writeValue(bytes);
+                    addLog(`Write Success: ${input}`, 'success');
+                } catch (e) {
+                    addLog(`Write Error: ${e.message}`, 'error');
+                }
+            };
+
+            const handleSubscribeCharacteristic = async (serviceUuid, charUuid) => {
+                if (!bleServer) return;
+                try {
+                    addLog(`Subscribing to [${charUuid.split('-')[0]}]...`, 'info');
+                    const service = await bleServer.getPrimaryService(serviceUuid);
+                    const characteristic = await service.getCharacteristic(charUuid);
+                    
+                    await characteristic.startNotifications();
+                    characteristic.addEventListener('characteristicvaluechanged', (e) => {
+                        const value = e.target.value;
+                        let hex = '';
+                        for (let i = 0; i < value.byteLength; i++) {
+                            hex += value.getUint8(i).toString(16).padStart(2, '0') + ' ';
+                        }
+                        addLog(`Notify [${charUuid.split('-')[0]}]: ${hex}`, 'success');
+                    });
+                    
+                    addLog(`Subscribed to notifications on ${charUuid.split('-')[0]}`, 'success');
+                } catch (e) {
+                    addLog(`Subscribe Error: ${e.message}`, 'error');
                 }
             };
 
@@ -546,14 +626,32 @@
                                                 </span>
                                             ))}
                                             </div>
-                                            {c.properties.includes('read') && (
-                                            <button 
-                                                onClick={() => handleReadCharacteristic(srv.uuid, c.uuid)}
-                                                className="text-[10px] font-bold bg-zinc-800 hover:bg-zinc-200 hover:text-black text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
-                                            >
-                                                READ
-                                            </button>
-                                            )}
+                                            <div className="flex gap-2">
+                                                {c.properties.includes('read') && (
+                                                <button 
+                                                    onClick={() => handleReadCharacteristic(srv.uuid, c.uuid)}
+                                                    className="text-[10px] font-bold bg-zinc-800 hover:bg-zinc-200 hover:text-black text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+                                                >
+                                                    READ
+                                                </button>
+                                                )}
+                                                {c.properties.toLowerCase().includes('write') && (
+                                                <button 
+                                                    onClick={() => handleWriteCharacteristic(srv.uuid, c.uuid)}
+                                                    className="text-[10px] font-bold bg-zinc-800 hover:bg-indigo-500 hover:text-white text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+                                                >
+                                                    WRITE
+                                                </button>
+                                                )}
+                                                {c.properties.toLowerCase().includes('notify') && (
+                                                <button 
+                                                    onClick={() => handleSubscribeCharacteristic(srv.uuid, c.uuid)}
+                                                    className="text-[10px] font-bold bg-zinc-800 hover:bg-emerald-500 hover:text-white text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+                                                >
+                                                    NOTIFY
+                                                </button>
+                                                )}
+                                            </div>
                                         </div>
                                         </div>
                                     ))}
