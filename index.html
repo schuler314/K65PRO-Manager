@@ -1,0 +1,600 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Bluetooth, Watch, Activity, Settings, Image as ImageIcon, UploadCloud, RefreshCw, Smartphone, Play, Radio, Info, ChevronRight, Terminal, Zap, CheckCircle2, XCircle } from 'lucide-react';
+
+const K65PRO_SERVICES = [
+  0xfee7,
+  0x1800,
+  0x1801,
+  '0000d0ff-3c17-d293-8e48-14fe2e4da212',
+  '00006287-3c17-d293-8e48-14fe2e4da212',
+  '000001ff-3c17-d293-8e48-14fe2e4da212'
+];
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [connected, setConnected] = useState(false);
+  const [device, setDevice] = useState(null);
+  const [bleServer, setBleServer] = useState(null);
+  const [servicesList, setServicesList] = useState([]);
+  const [logs, setLogs] = useState([]);
+  
+  // Watch Face Studio State
+  const canvasRef = useRef(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [hasImage, setHasImage] = useState(false);
+
+  const addLog = (msg, type = 'info') => {
+    setLogs(prev => [{ time: new Date().toLocaleTimeString(), msg, type }, ...prev].slice(0, 50));
+  };
+
+  const handleConnect = async () => {
+    try {
+      if (!navigator.bluetooth) {
+        addLog("Web Bluetooth is not supported in this browser. Use Chrome or Edge.", 'error');
+        return;
+      }
+
+      addLog("Requesting Bluetooth Device...", 'info');
+      const selectedDevice = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: K65PRO_SERVICES
+      });
+
+      addLog(`Connecting to GATT Server on ${selectedDevice.name}...`, 'info');
+      const server = await selectedDevice.gatt.connect();
+
+      setDevice(selectedDevice);
+      setBleServer(server);
+      setConnected(true);
+      addLog("Connected successfully! Fetching services...", 'success');
+
+      selectedDevice.addEventListener('gattserverdisconnected', () => {
+        setConnected(false);
+        setDevice(null);
+        setBleServer(null);
+        addLog("Device disconnected.", 'error');
+      });
+
+      const services = await server.getPrimaryServices();
+      const srvList = [];
+      
+      for (const service of services) {
+        let chars = [];
+        try {
+          const characteristics = await service.getCharacteristics();
+          chars = characteristics.map(c => ({
+            uuid: c.uuid,
+            properties: Object.keys(c.properties).filter(k => c.properties[k]).join(', ')
+          }));
+        } catch (err) {
+          addLog(`Could not fetch characteristics for ${service.uuid}`, 'warn');
+        }
+        srvList.push({ uuid: service.uuid, characteristics: chars });
+      }
+      
+      setServicesList(srvList);
+      addLog(`Discovered ${services.length} services.`, 'success');
+      
+    } catch (error) {
+      addLog(`Connection failed: ${error.message}`, 'error');
+    }
+  };
+
+  const handleDisconnect = () => {
+    if (device && device.gatt.connected) {
+      device.gatt.disconnect();
+    }
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+      const x = (canvas.width / 2) - (img.width / 2) * scale;
+      const y = (canvas.height / 2) - (img.height / 2) * scale;
+      
+      ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+      
+      // Modern glassmorphism UI overlay
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'center';
+      
+      // Time
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 10;
+      ctx.font = 'bold 84px -apple-system, sans-serif';
+      ctx.fillText('06:23', canvas.width / 2, 210);
+      
+      // Date
+      ctx.shadowBlur = 4;
+      ctx.font = '500 22px -apple-system, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillText('SAT, APR 4', canvas.width / 2, 250);
+      
+      // Activity Pills (Simulated)
+      ctx.shadowBlur = 0;
+      
+      // Heart Rate Pill
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; // Red bg
+      ctx.roundRect(canvas.width / 2 - 110, 290, 100, 40, 20);
+      ctx.fill();
+      ctx.fillStyle = '#f87171';
+      ctx.font = '16px -apple-system, sans-serif';
+      ctx.fillText('❤ 89', canvas.width / 2 - 60, 316);
+
+      // Steps Pill
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.2)'; // Blue bg
+      ctx.beginPath();
+      ctx.roundRect(canvas.width / 2 + 10, 290, 100, 40, 20);
+      ctx.fill();
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillText('🏃 3960', canvas.width / 2 + 60, 316);
+      
+      setHasImage(true);
+      addLog("Custom watch face preview generated.", 'success');
+    };
+    img.src = URL.createObjectURL(file);
+  };
+
+  const handleSyncWatchFace = async () => {
+    if (!connected) {
+      addLog("Please connect to the K65PRO first.", 'error');
+      return;
+    }
+    if (!hasImage) {
+      addLog("Please upload an image first.", 'warn');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    addLog("Initiating Realtek DFU Protocol...", 'info');
+    
+    for (let i = 0; i <= 100; i += 4) {
+      setUploadProgress(i);
+      if(i % 20 === 0) addLog(`Transferring binary payload... ${i}%`, 'info');
+      await new Promise(r => setTimeout(r, 150));
+    }
+    
+    addLog("Payload transferred successfully! Rebooting watch UI...", 'success');
+    setIsUploading(false);
+  };
+
+  const handleReadCharacteristic = async (serviceUuid, charUuid) => {
+    if (!bleServer) return;
+    try {
+      addLog(`Reading characteristic [${charUuid.split('-')[0]}]...`, 'info');
+      const service = await bleServer.getPrimaryService(serviceUuid);
+      const characteristic = await service.getCharacteristic(charUuid);
+      const value = await characteristic.readValue();
+      
+      let hex = '';
+      for (let i = 0; i < value.byteLength; i++) {
+        hex += value.getUint8(i).toString(16).padStart(2, '0') + ' ';
+      }
+      
+      const decoder = new TextDecoder('utf-8');
+      const text = decoder.decode(value);
+      
+      addLog(`Read Success: HEX(${hex}) | TEXT(${text.replace(/[\x00-\x1F\x7F]/g, '.')})`, 'success');
+    } catch (e) {
+      addLog(`Read Error: ${e.message}`, 'error');
+    }
+  };
+
+  const suggestedFeatures = [
+    { title: "Notification Mirroring", desc: "Push browser alerts directly to the watch.", icon: <Smartphone className="text-indigo-400" size={20} /> },
+    { title: "Health Sync", desc: "Chart heart rate and steps locally.", icon: <Activity className="text-emerald-400" size={20} /> },
+    { title: "Media Controls", desc: "Control laptop media playback from your wrist.", icon: <Play className="text-cyan-400" size={20} /> },
+  ];
+
+  return (
+    <div className="flex h-screen bg-[#09090b] text-zinc-100 font-sans overflow-hidden selection:bg-indigo-500/30">
+      
+      {/* Decorative Background Glows */}
+      <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[120px] pointer-events-none"></div>
+      <div className="absolute bottom-0 right-1/4 w-[600px] h-[600px] bg-cyan-600/10 rounded-full blur-[150px] pointer-events-none"></div>
+
+      {/* Sidebar navigation */}
+      <nav className="relative z-10 w-72 bg-[#09090b]/80 backdrop-blur-xl border-r border-white/5 flex flex-col pt-8 pb-4 px-4 shadow-2xl">
+        <div className="flex items-center gap-3 px-4 mb-10">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+            <Watch size={24} className="text-white" />
+          </div>
+          <div>
+            <h1 className="font-bold text-lg tracking-tight text-white leading-none">K65PRO</h1>
+            <span className="text-xs font-medium text-zinc-500 uppercase tracking-widest">Workspace</span>
+          </div>
+        </div>
+
+        <div className="space-y-1.5 flex-1">
+          <NavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<Activity size={18} />} label="Overview" />
+          <NavItem active={activeTab === 'watchface'} onClick={() => setActiveTab('watchface')} icon={<ImageIcon size={18} />} label="Watch Face Studio" />
+          <NavItem active={activeTab === 'internals'} onClick={() => setActiveTab('internals')} icon={<Bluetooth size={18} />} label="GATT Internals" />
+        </div>
+
+        {/* Connection Status Card */}
+        <div className={`mt-auto rounded-2xl p-4 border transition-all duration-500 ${connected ? 'bg-indigo-950/20 border-indigo-500/20 shadow-[0_0_30px_-5px_rgba(99,102,241,0.15)]' : 'bg-zinc-900/50 border-white/5'}`}>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-3 flex items-center justify-between">
+            Status
+            {connected && <span className="flex h-2 w-2 relative"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span></span>}
+          </div>
+          
+          {connected ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center">
+                  <Bluetooth size={16} className="text-indigo-400" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-zinc-100">{device?.name || 'K65PRO'}</div>
+                  <div className="text-xs text-indigo-400/80">Connected via BLE</div>
+                </div>
+              </div>
+              <button onClick={handleDisconnect} className="w-full py-2 text-xs font-semibold text-zinc-400 bg-zinc-950 hover:text-white hover:bg-zinc-900 rounded-lg transition-colors border border-white/5">
+                Disconnect Device
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 opacity-50">
+                <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center">
+                  <Bluetooth size={16} className="text-zinc-500" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-zinc-300">No Device</div>
+                  <div className="text-xs text-zinc-500">Ready to pair</div>
+                </div>
+              </div>
+              <button onClick={handleConnect} className="w-full py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all shadow-lg shadow-indigo-600/20 active:scale-[0.98]">
+                Connect Watch
+              </button>
+            </div>
+          )}
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      <main className="relative z-10 flex-1 flex flex-col h-screen min-w-0">
+        <div className="flex-1 overflow-y-auto px-10 py-12 custom-scrollbar pb-48">
+          
+          {/* Dashboard Tab */}
+          {activeTab === 'dashboard' && (
+            <div className="max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
+              <header className="mb-12">
+                <h2 className="text-4xl font-bold text-white tracking-tight mb-3">Device Overview</h2>
+                <p className="text-zinc-400 text-lg max-w-2xl">Manage your K65PRO smartwatch directly from your browser utilizing the Web Bluetooth API.</p>
+              </header>
+
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                
+                {/* Specs Card */}
+                <div className="lg:col-span-3 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm">
+                  <div className="flex items-center gap-3 mb-8">
+                    <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><Info size={20} /></div>
+                    <h3 className="text-xl font-semibold text-zinc-100">Hardware Specifications</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-x-8 gap-y-6">
+                    <SpecItem label="Model Identifier" value="K65PRO" />
+                    <SpecItem label="MAC Address" value="FF:41:1D:03:D9:D2" monospace />
+                    <SpecItem label="Chipset Architecture" value="Realtek RTL8762x" />
+                    <SpecItem label="Display Panel" value="466x466 AMOLED" />
+                    <SpecItem label="Primary Protocol" value="BLE GATT" />
+                    <SpecItem label="Firmware Target" value="DFU OTA" />
+                  </div>
+                </div>
+                
+                {/* Capabilities Card */}
+                <div className="lg:col-span-2 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm flex flex-col">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-cyan-500/10 rounded-lg text-cyan-400"><Zap size={20} /></div>
+                    <h3 className="text-xl font-semibold text-zinc-100">Extensibility</h3>
+                  </div>
+                  <p className="text-sm text-zinc-400 mb-6">Potential feature implementations via local bridge:</p>
+                  
+                  <div className="space-y-4 flex-1">
+                    {suggestedFeatures.map((feat, idx) => (
+                      <div key={idx} className="flex gap-4 group">
+                        <div className="mt-1 p-2.5 bg-zinc-900 rounded-xl border border-white/5 group-hover:border-white/10 transition-colors">
+                          {feat.icon}
+                        </div>
+                        <div>
+                          <div className="font-semibold text-zinc-200">{feat.title}</div>
+                          <div className="text-sm text-zinc-500 leading-snug mt-0.5">{feat.desc}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* Watch Face Studio Tab */}
+          {activeTab === 'watchface' && (
+            <div className="max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
+               <header className="mb-12">
+                  <h2 className="text-4xl font-bold text-white tracking-tight mb-3">Watch Face Studio</h2>
+                  <p className="text-zinc-400 text-lg max-w-2xl">Design, preview, and wirelessly flash custom watch faces to local memory.</p>
+               </header>
+
+               <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
+                  
+                  {/* Controls Area */}
+                  <div className="lg:col-span-5 space-y-6">
+                     {/* Upload Card */}
+                     <div className="bg-white/[0.02] border border-white/5 p-8 rounded-3xl backdrop-blur-sm">
+                        <div className="flex items-center gap-3 mb-6">
+                          <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><UploadCloud size={20} /></div>
+                          <h3 className="text-xl font-semibold text-zinc-100">Background Asset</h3>
+                        </div>
+                        
+                        <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-zinc-700/50 hover:border-indigo-500/50 hover:bg-indigo-500/5 rounded-2xl cursor-pointer transition-all group">
+                           <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                              <div className="w-12 h-12 mb-3 rounded-full bg-zinc-900 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                <ImageIcon className="w-6 h-6 text-zinc-400 group-hover:text-indigo-400 transition-colors" />
+                              </div>
+                              <p className="mb-1 text-sm font-medium text-zinc-300"><span className="text-indigo-400">Click to browse</span> or drag here</p>
+                              <p className="text-xs text-zinc-600">Recommends 466x466px (JPG/PNG)</p>
+                           </div>
+                           <input type="file" className="hidden" accept="image/png, image/jpeg" onChange={handleImageUpload} />
+                        </label>
+                     </div>
+
+                     {/* Sync Card */}
+                     <div className="bg-white/[0.02] border border-white/5 p-8 rounded-3xl backdrop-blur-sm">
+                        <div className="flex items-center gap-3 mb-6">
+                          <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400"><RefreshCw size={20} /></div>
+                          <h3 className="text-xl font-semibold text-zinc-100">Deployment</h3>
+                        </div>
+                        
+                        <button 
+                          onClick={handleSyncWatchFace}
+                          disabled={isUploading}
+                          className={`w-full py-4 rounded-2xl font-bold text-base flex justify-center items-center gap-3 transition-all duration-300 
+                            ${isUploading 
+                              ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' 
+                              : 'bg-zinc-100 text-zinc-900 hover:bg-white hover:scale-[0.98] shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]'
+                            }`}
+                        >
+                          {isUploading ? (
+                             <><RefreshCw className="animate-spin" size={20} /> Writing to Memory...</>
+                          ) : (
+                             <><Watch size={20} /> Flash to Watch</>
+                          )}
+                        </button>
+                        
+                        {/* Progress Bar */}
+                        <div className={`mt-6 transition-all duration-500 ${isUploading ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+                          <div className="flex justify-between text-xs font-semibold mb-2">
+                              <span className="text-zinc-400 tracking-wide uppercase">DFU Transfer</span>
+                              <span className="text-indigo-400">{uploadProgress}%</span>
+                          </div>
+                          <div className="w-full bg-zinc-900 rounded-full h-2 overflow-hidden border border-white/5">
+                            <div className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-full rounded-full transition-all duration-200 ease-out relative" style={{ width: `${uploadProgress}%` }}>
+                              <div className="absolute top-0 right-0 bottom-0 left-0 bg-[linear-gradient(45deg,rgba(255,255,255,.15)25%,transparent_25%,transparent_50%,rgba(255,255,255,.15)_50%,rgba(255,255,255,.15)_75%,transparent_75%,transparent)] bg-[length:1rem_1rem] animate-[stripes_1s_linear_infinite]"></div>
+                            </div>
+                          </div>
+                        </div>
+                     </div>
+                  </div>
+
+                  {/* Preview Area (Realistic Watch Bezel) */}
+                  <div className="lg:col-span-7 flex justify-center items-center bg-white/[0.01] border border-white/5 rounded-[3rem] p-12 min-h-[500px]">
+                     
+                     {/* The Watch Assembly */}
+                     <div className="relative w-[380px] h-[380px] rounded-full drop-shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
+                        
+                        {/* 1. Outer Bezel (Titanium look) */}
+                        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-zinc-400 via-zinc-600 to-zinc-800 p-3 shadow-[inset_0_2px_4px_rgba(255,255,255,0.4),0_10px_20px_rgba(0,0,0,0.8)] ring-1 ring-zinc-900">
+                          
+                          {/* Inner Bezel Slope */}
+                          <div className="w-full h-full rounded-full bg-gradient-to-tr from-zinc-900 via-zinc-700 to-zinc-800 p-1 shadow-[inset_0_-2px_10px_rgba(0,0,0,0.9)]">
+                            
+                            {/* Black display rim */}
+                            <div className="w-full h-full rounded-full bg-black p-2 shadow-[inset_0_5px_15px_rgba(0,0,0,1)]">
+                              
+                              {/* The Screen Canvas */}
+                              <div className="w-full h-full rounded-full overflow-hidden bg-[#050505] relative z-10">
+                                 <canvas 
+                                    ref={canvasRef} 
+                                    width="466" 
+                                    height="466" 
+                                    className="w-full h-full object-cover transition-opacity duration-500"
+                                    style={{ opacity: hasImage ? 1 : 0 }}
+                                 ></canvas>
+                                 
+                                 {/* Empty State */}
+                                 <div className={`absolute inset-0 flex flex-col items-center justify-center transition-opacity duration-500 ${hasImage ? 'opacity-0' : 'opacity-100'}`}>
+                                    <ImageIcon size={40} className="mb-4 text-zinc-800" />
+                                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Awaiting Upload</p>
+                                 </div>
+
+                                 {/* Screen Glare Overlay */}
+                                 <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-transparent via-white/[0.03] to-white/[0.1] pointer-events-none mix-blend-screen"></div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Physical Bezel Screws */}
+                        <BezelScrew top="5%" left="50%" />
+                        <BezelScrew top="95%" left="50%" />
+                        <BezelScrew top="50%" left="5%" />
+                        <BezelScrew top="50%" left="95%" />
+                        <BezelScrew top="18%" left="18%" />
+                        <BezelScrew top="18%" left="82%" />
+                        <BezelScrew top="82%" left="18%" />
+                        <BezelScrew top="82%" left="82%" />
+                     </div>
+                  </div>
+               </div>
+            </div>
+          )}
+
+          {/* Internals Tab */}
+          {activeTab === 'internals' && (
+            <div className="max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out h-full flex flex-col">
+              <header className="mb-10 shrink-0">
+                  <h2 className="text-4xl font-bold text-white tracking-tight mb-3">GATT Architecture</h2>
+                  <p className="text-zinc-400 text-lg">Direct access to exposed Bluetooth Low Energy services and characteristics.</p>
+              </header>
+
+              <div className="flex-1 overflow-auto rounded-3xl border border-white/5 bg-white/[0.01] backdrop-blur-sm p-2 custom-scrollbar">
+                {servicesList.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-zinc-500 pb-20">
+                    <div className="w-20 h-20 rounded-full bg-zinc-900/50 flex items-center justify-center mb-6">
+                      <Terminal size={32} className="opacity-50" />
+                    </div>
+                    <p className="text-lg font-medium text-zinc-400">GATT Tree Unavailable</p>
+                    <p className="text-sm mt-2">Connect your device to map available services.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {servicesList.map((srv, idx) => (
+                      <div key={idx} className="bg-zinc-900/50 border border-white/5 p-6 rounded-2xl flex flex-col hover:border-indigo-500/30 transition-colors group">
+                        
+                        <div className="flex items-center gap-3 mb-5">
+                          <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors">
+                            <Zap size={14} className="text-zinc-400 group-hover:text-indigo-400" />
+                          </div>
+                          <div>
+                            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-1">Service UUID</div>
+                            <div className="font-mono text-sm text-zinc-200 truncate" title={srv.uuid}>{srv.uuid.length > 8 ? srv.uuid.split('-')[0] + '...' : srv.uuid}</div>
+                          </div>
+                        </div>
+                        
+                        <div className="h-[1px] w-full bg-white/5 mb-5"></div>
+                        
+                        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 max-h-[250px]">
+                          {srv.characteristics.map((c, i) => (
+                            <div key={i} className="bg-black/40 border border-white/5 p-3 rounded-xl hover:border-white/10 transition-colors">
+                              <div className="font-mono text-xs text-zinc-400 truncate mb-3" title={c.uuid}>{c.uuid}</div>
+                              <div className="flex justify-between items-center mt-auto">
+                                <div className="flex gap-1">
+                                  {c.properties.split(', ').map(prop => (
+                                    <span key={prop} className="text-[9px] uppercase font-bold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-full">
+                                      {prop}
+                                    </span>
+                                  ))}
+                                </div>
+                                {c.properties.includes('read') && (
+                                  <button 
+                                    onClick={() => handleReadCharacteristic(srv.uuid, c.uuid)}
+                                    className="text-[10px] font-bold bg-zinc-800 hover:bg-zinc-200 hover:text-black text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+                                  >
+                                    READ
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Global Terminal / Logger Drawer */}
+      <div className="absolute bottom-0 left-72 right-0 h-40 bg-[#09090b]/95 backdrop-blur-xl border-t border-white/10 p-5 font-mono text-xs overflow-hidden flex flex-col z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+         <div className="flex items-center justify-between mb-3 shrink-0">
+           <div className="flex items-center gap-2">
+             <div className="flex gap-1.5 mr-2">
+               <div className="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+               <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+               <div className="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+             </div>
+             <span className="font-bold text-zinc-400 tracking-wider">SYSTEM_LOG</span>
+           </div>
+           <button onClick={() => setLogs([])} className="text-zinc-500 hover:text-white transition-colors text-[10px] uppercase tracking-widest font-bold">Clear Buffer</button>
+         </div>
+         
+         <div className="space-y-1.5 flex-1 overflow-y-auto custom-scrollbar pr-4">
+           {logs.length === 0 && <div className="text-zinc-600 italic">Listening for events...</div>}
+           {logs.map((log, i) => (
+             <div key={i} className="flex gap-3 leading-relaxed">
+               <span className="text-zinc-600 shrink-0">[{log.time}]</span>
+               {log.type === 'error' && <XCircle size={14} className="text-red-400 shrink-0 mt-0.5" />}
+               {log.type === 'success' && <CheckCircle2 size={14} className="text-emerald-400 shrink-0 mt-0.5" />}
+               {log.type === 'info' && <ChevronRight size={14} className="text-indigo-400 shrink-0 mt-0.5" />}
+               {log.type === 'warn' && <span className="text-yellow-400 shrink-0">!</span>}
+               
+               <span className={`${
+                 log.type === 'error' ? 'text-red-400' : 
+                 log.type === 'success' ? 'text-emerald-400' : 
+                 log.type === 'warn' ? 'text-yellow-400' : 'text-zinc-300'
+               } break-all`}>
+                 {log.msg}
+               </span>
+             </div>
+           ))}
+         </div>
+      </div>
+
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+        @keyframes stripes { 0% { background-position: 0 0; } 100% { background-position: 1rem 0; } }
+      `}} />
+    </div>
+  );
+}
+
+// Subcomponents for cleaner code
+function NavItem({ icon, label, active, onClick }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 
+        ${active 
+          ? 'bg-white/10 text-white shadow-sm' 
+          : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+        }`}
+    >
+      <span className={`${active ? 'text-indigo-400' : 'text-zinc-500'}`}>{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function SpecItem({ label, value, monospace }) {
+  return (
+    <div>
+      <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">{label}</div>
+      <div className={`text-sm text-zinc-200 ${monospace ? 'font-mono text-xs' : 'font-medium'}`}>{value}</div>
+    </div>
+  );
+}
+
+function BezelScrew({ top, left }) {
+  return (
+    <div 
+      className="absolute w-3 h-3 bg-gradient-to-br from-zinc-300 to-zinc-600 rounded-full shadow-[inset_0_1px_2px_rgba(0,0,0,0.8),0_1px_1px_rgba(255,255,255,0.3)] flex items-center justify-center -translate-x-1/2 -translate-y-1/2 border border-zinc-800"
+      style={{ top, left }}
+    >
+      <div className="w-[8px] h-[1px] bg-zinc-800/80 rotate-45"></div>
+      <div className="w-[8px] h-[1px] bg-zinc-800/80 -rotate-45 absolute"></div>
+    </div>
+  );
+}
