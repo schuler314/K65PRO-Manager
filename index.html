@@ -28,7 +28,7 @@
         .widget-layer { cursor: grab; user-select: none; transform: translate(-50%, -50%); position: absolute; transition: box-shadow 0.2s ease, border 0.2s ease, background 0.2s ease; border: 1px solid transparent; }
         .widget-layer:active { cursor: grabbing; }
         .widget-layer:hover { border: 1px dashed rgba(255,255,255,0.3); border-radius: 8px; }
-        .widget-selected { box-shadow: 0 0 0 2px #3b82f6, 0 0 20px rgba(59, 130, 246, 0.5); border-radius: 8px; background: rgba(59, 130, 246, 0.1); border: 1px solid transparent !important; z-index: 50; }
+        .widget-selected { box-shadow: 0 0 0 2px #3b82f6, 0 0 20px rgba(59, 130, 246, 0.5); border-radius: 8px; background: rgba(59, 130, 246, 0.1); border: 1px solid transparent !important; }
         
         .analog-hand { transform-origin: bottom center; position: absolute; bottom: 50%; left: 50%; transform: translateX(-50%); box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
         
@@ -58,6 +58,7 @@
         const Heart = (p) => <Icon {...p}><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></Icon>;
         const Battery = (p) => <Icon {...p}><rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/></Icon>;
         const Palette = (p) => <Icon {...p}><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.17-.6-1.58-.35-.38-.59-.88-.59-1.42 0-1.1.9-2 2-2h1.69c2.65 0 4.81-2.16 4.81-4.81C21.81 6.34 17.41 2 12 2z"/><circle cx="6.5" cy="11.5" r="1.5"/><circle cx="9.5" cy="7.5" r="1.5"/><circle cx="14.5" cy="7.5" r="1.5"/><circle cx="17.5" cy="11.5" r="1.5"/></Icon>;
+        const FileDown = (p) => <Icon {...p}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></Icon>;
 
         const K65PRO_SERVICES = [
             0xfee7, 0x1800, 0x1801,
@@ -106,10 +107,11 @@
             // AI Color Palette State
             const [palette, setPalette] = useState(DEFAULT_PALETTE);
             
-            // UX Drag Fix: Storing the click offset
+            // UX Drag Fix: Storing the click offset & Guides
             const [dragTarget, setDragTarget] = useState(null);
             const [selectedWidget, setSelectedWidget] = useState(null);
             const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+            const [guides, setGuides] = useState({ x: null, y: null });
             
             // Customizable Widget State
             const [widgets, setWidgets] = useState({
@@ -120,6 +122,7 @@
                 cals: { visible: false, x: 120, y: 260, style: 'icon_text', font: "'Inter', sans-serif", color: '#f97316', size: 14 },
                 dist: { visible: false, x: 300, y: 260, style: 'icon_text', font: "'Inter', sans-serif", color: '#06b6d4', size: 14 },
                 batt: { visible: false, x: 210, y: 70, style: 'icon', font: "'Inter', sans-serif", color: '#10b981', size: 14 },
+                weather: { visible: false, x: 210, y: 175, style: 'icon_text', font: "'Inter', sans-serif", color: '#38bdf8', size: 14 },
             });
 
             const updateWidget = (id, key, value) => setWidgets(prev => ({ ...prev, [id]: { ...prev[id], [key]: value } }));
@@ -233,6 +236,17 @@
                 }
             };
 
+            const handleFindWatch = () => sendCommand([0x04, 0x01]); 
+            const handleForceSync = () => sendCommand([0x07, 0x01]); 
+            const handleWeatherSync = () => {
+                if(!zipCode) {
+                    addLog("Enter a zip code.", "warn");
+                    return alert("Please enter a zip code first.");
+                }
+                sendCommand([0x09, 0x01]); 
+                addLog(`Weather requested for Zip: ${zipCode}`, "info");
+            };
+
             // --- Color Extraction Logic (K-Means Bucket Quantization) ---
             const extractColorsFromImage = (imgUrl) => {
                 const img = new Image();
@@ -240,7 +254,7 @@
                 img.onload = () => {
                     const cvs = document.createElement('canvas');
                     const ctx = cvs.getContext('2d');
-                    cvs.width = 50; cvs.height = 50; // Scaled down massively for performance
+                    cvs.width = 50; cvs.height = 50; 
                     ctx.drawImage(img, 0, 0, 50, 50);
                     
                     const data = ctx.getImageData(0,0,50,50).data;
@@ -248,10 +262,8 @@
                     
                     for(let i=0; i<data.length; i+=4) {
                         const r = data[i], g = data[i+1], b = data[i+2];
-                        // Ignore extremely dark or washed out colors to find vibrant accents
                         if ((r < 40 && g < 40 && b < 40) || (r > 240 && g > 240 && b > 240)) continue;
                         
-                        // Cluster colors by rounding to nearest 32
                         const rG = Math.min(255, Math.round(r / 32) * 32);
                         const gG = Math.min(255, Math.round(g / 32) * 32);
                         const bG = Math.min(255, Math.round(b / 32) * 32);
@@ -260,10 +272,7 @@
                         colorCounts[hex] = (colorCounts[hex] || 0) + 1;
                     }
                     
-                    // Sort by frequency
                     const sortedColors = Object.entries(colorCounts).sort((a,b) => b[1] - a[1]).map(e => e[0]);
-                    
-                    // Pad with white and defaults up to 8 colors
                     const finalPalette = ['#ffffff', ...sortedColors.slice(0, 6)];
                     while(finalPalette.length < 8) {
                         finalPalette.push(DEFAULT_PALETTE[finalPalette.length]);
@@ -278,7 +287,7 @@
                 if (e.target.files[0]) {
                     const url = URL.createObjectURL(e.target.files[0]);
                     setBgImage(url);
-                    extractColorsFromImage(url); // Trigger auto color palette
+                    extractColorsFromImage(url);
                 }
             };
             
@@ -300,14 +309,36 @@
                 if (!dragTarget || !editorRef.current) return;
                 const rect = editorRef.current.getBoundingClientRect();
                 
-                const newX = e.clientX - rect.left + dragOffset.x;
-                const newY = e.clientY - rect.top + dragOffset.y;
+                let newX = e.clientX - rect.left + dragOffset.x;
+                let newY = e.clientY - rect.top + dragOffset.y;
+                
+                // Smart Snapping Logic
+                const SNAP_TOLERANCE = 8;
+                let guideX = null;
+                let guideY = null;
+
+                // Center Snapping
+                if (Math.abs(newX - 210) < SNAP_TOLERANCE) { newX = 210; guideX = 210; }
+                if (Math.abs(newY - 210) < SNAP_TOLERANCE) { newY = 210; guideY = 210; }
+
+                // Sibling Widget Snapping
+                Object.entries(widgets).forEach(([id, w]) => {
+                    if (id !== dragTarget && w.visible) {
+                        if (Math.abs(newX - w.x) < SNAP_TOLERANCE) { newX = w.x; guideX = w.x; }
+                        if (Math.abs(newY - w.y) < SNAP_TOLERANCE) { newY = w.y; guideY = w.y; }
+                    }
+                });
+
+                setGuides({ x: guideX, y: guideY });
                 
                 updateWidget(dragTarget, 'x', Math.max(0, Math.min(420, newX)));
                 updateWidget(dragTarget, 'y', Math.max(0, Math.min(420, newY)));
             }, [dragTarget, dragOffset, widgets]);
             
-            const handlePointerUp = useCallback(() => setDragTarget(null), []);
+            const handlePointerUp = useCallback(() => {
+                setDragTarget(null);
+                setGuides({ x: null, y: null });
+            }, []);
             const handleBackgroundPointerDown = () => setSelectedWidget(null);
 
             useEffect(() => {
@@ -321,7 +352,6 @@
 
             const handleStyleChange = (id, newStyle) => {
                 updateWidget(id, 'style', newStyle);
-                // Smart resizing to prevent tiny analog clocks or giant text
                 if (newStyle.includes('analog') && widgets[id].size < 150) {
                     updateWidget(id, 'size', 200); 
                 } else if (!newStyle.includes('analog') && widgets[id].size > 120) {
@@ -332,16 +362,45 @@
             const handleGlobalTheme = (e) => {
                 const style = e.target.value;
                 if(!style) return;
-                ['steps', 'hr', 'cals', 'dist', 'batt'].forEach(metric => {
+                ['steps', 'hr', 'cals', 'dist', 'batt', 'weather'].forEach(metric => {
                     updateWidget(metric, 'style', style);
                 });
             };
 
-            const handleDeploy = async () => {
-                if (!connected) {
-                    addLog("Deploy failed: Watch not connected.", "error");
-                    return alert("Connect watch to deploy.");
+            // --- Download BIN Helper (Converts Canvas to RGB565) ---
+            const downloadBinFile = (canvas) => {
+                const ctx = canvas.getContext('2d');
+                const imgData = ctx.getImageData(0, 0, 466, 466);
+                const data = imgData.data;
+                
+                // RGB565 Conversion (2 bytes per pixel)
+                const buffer = new ArrayBuffer(466 * 466 * 2);
+                const view = new DataView(buffer);
+                
+                let offset = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i] >> 3;     // 5 bits
+                    const g = data[i+1] >> 2;   // 6 bits
+                    const b = data[i+2] >> 3;   // 5 bits
+                    // Pack into 16-bit
+                    const rgb565 = (r << 11) | (g << 5) | b;
+                    view.setUint16(offset, rgb565, true); // Little endian
+                    offset += 2;
                 }
+                
+                const blob = new Blob([buffer], { type: "application/octet-stream" });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = "K65PRO_RawPixels.bin";
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            };
+
+            // --- Flatten Canvas & Simulate DFU Deploy ---
+            const handleDeploy = async () => {
                 if (!bgImage) {
                     addLog("Deploy failed: No background image.", "warn");
                     return alert("Upload a background image first.");
@@ -349,9 +408,8 @@
 
                 setIsUploading(true);
                 setUploadProgress(0);
-                addLog("Starting DFU deployment. Rendering layout to raw buffer...", "info");
+                addLog("Starting Image Rendering to 466x466 Buffer...", "info");
                 
-                // Render HTML widgets down to a RAW 466x466 HTML5 Canvas Buffer
                 const canvas = previewCanvasRef.current;
                 if (canvas) {
                     const ctx = canvas.getContext('2d');
@@ -370,7 +428,16 @@
                     ctx.textBaseline = 'middle';
                     const ratio = 466 / 420; 
                     
-                    Object.entries(widgets).forEach(([id, w]) => {
+                    // Respect the Z-Index visually by rendering analog first
+                    const renderList = Object.entries(widgets).sort(([idA, wA], [idB, wB]) => {
+                        const aIsAnalog = wA.style.includes('analog');
+                        const bIsAnalog = wB.style.includes('analog');
+                        if (aIsAnalog && !bIsAnalog) return -1;
+                        if (!aIsAnalog && bIsAnalog) return 1;
+                        return 0;
+                    });
+                    
+                    renderList.forEach(([id, w]) => {
                         if(!w.visible) return;
                         ctx.fillStyle = w.color;
                         const cx = w.x * ratio; 
@@ -380,26 +447,57 @@
                             if(!w.style.includes('analog')) {
                                 ctx.font = `bold ${w.size * ratio}px ${w.font.split(',')[0]}`;
                                 ctx.fillText(w.style.includes('sec') ? '06:23:45' : '06:23', cx, cy);
+                            } else {
+                                // Draw analog hands onto canvas
+                                ctx.save(); ctx.translate(cx, cy);
+                                const rSize = w.size * ratio;
+                                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                                for(let i=0; i<12; i++){
+                                    ctx.rotate(30 * Math.PI / 180);
+                                    ctx.fillRect(-2, -rSize/2 + (rSize*0.03), 4, rSize*0.1);
+                                }
+                                ctx.restore(); ctx.save(); ctx.translate(cx, cy);
+                                ctx.rotate(45 * Math.PI / 180); ctx.fillStyle = w.color;
+                                ctx.fillRect(-rSize*0.015, -rSize*0.25, rSize*0.03, rSize*0.25);
+                                ctx.restore(); ctx.save(); ctx.translate(cx, cy);
+                                ctx.rotate(120 * Math.PI / 180); ctx.fillStyle = w.color; ctx.globalAlpha = 0.8;
+                                ctx.fillRect(-rSize*0.01, -rSize*0.38, rSize*0.02, rSize*0.38);
+                                ctx.restore(); ctx.save(); ctx.translate(cx, cy);
+                                ctx.rotate(210 * Math.PI / 180); ctx.fillStyle = '#ef4444';
+                                ctx.fillRect(-rSize*0.0075, -rSize*0.45, rSize*0.015, rSize*0.45);
+                                ctx.restore(); ctx.fillStyle = '#ffffff'; ctx.beginPath();
+                                ctx.arc(cx, cy, rSize*0.03, 0, 2*Math.PI); ctx.fill();
                             }
                         } else if (id === 'date') {
                             ctx.font = `500 ${w.size * ratio}px ${w.font.split(',')[0]}`;
                             ctx.fillText(w.style === 'full' ? '2026-04-04' : 'SAT 04-04', cx, cy);
                         } else {
                             ctx.font = `500 ${w.size * ratio}px ${w.font.split(',')[0]}`;
-                            const val = id === 'steps' ? '3960' : id === 'hr' ? '89' : id === 'cals' ? '128' : id === 'dist' ? '2.6' : '85%';
+                            const val = id === 'steps' ? '3960' : id === 'hr' ? '89' : id === 'cals' ? '128' : id === 'dist' ? '2.6' : id === 'weather' ? (zipCode ? '72°' : 'Set Zip') : '85%';
                             if (w.style !== 'icon') ctx.fillText(`• ${val}`, cx, cy);
                         }
                     });
                 }
 
-                // Simulate Bluetooth DFU chunk transfer
-                for (let i = 0; i <= 100; i += 2) {
-                    setUploadProgress(i);
-                    if (i % 20 === 0) addLog(`Transferring DFU chunk ${i}%...`, "info");
-                    await new Promise(r => setTimeout(r, 60));
+                addLog("Encoding to RGB565 format...", "info");
+                downloadBinFile(canvas); // Trigger download of the raw pixels
+
+                if(connected) {
+                    addLog("Starting DFU Transfer Simulation...", "info");
+                    for (let i = 0; i <= 100; i += 2) {
+                        setUploadProgress(i);
+                        if (i % 20 === 0) addLog(`Transferring DFU chunk ${i}%...`, "info");
+                        await new Promise(r => setTimeout(r, 60));
+                    }
+                    addLog("DFU Transfer Complete.", "success");
                 }
-                addLog("DFU Transfer Complete. Watch rebooting.", "success");
+                
                 setIsUploading(false);
+
+                // Explanation Alert
+                setTimeout(() => {
+                    alert("A RAW RGB565 '.bin' file has been downloaded to your computer!\n\nWhy didn't the watch restart?\nTo flash directly to your watch, the binary needs a proprietary Realtek Bootloader Header injected into it (which contains specific CRC checksums and memory offsets). \n\nBecause this header format is closed-source, the Bluetooth transfer in this app is a simulation. You must pack the downloaded .bin using a community tool like TBWatchFaceTool before pushing it to the K65PRO.");
+                }, 500);
             };
 
             // --- Enhanced Scalable Rendering Engine ---
@@ -407,7 +505,7 @@
                 if (w.style.includes('analog')) {
                     const isModern = w.style === 'analog_modern';
                     return (
-                        <div className={`relative rounded-full flex items-center justify-center pointer-events-none ${isModern ? '' : 'border-2 border-white/20 bg-black/40 backdrop-blur-md'}`}
+                        <div className={`relative rounded-full flex items-center justify-center pointer-events-none`}
                              style={{width: `${w.size}px`, height: `${w.size}px`}}>
                             
                             {/* Responsive Ticks */}
@@ -417,10 +515,10 @@
                                 </div>
                             ))}
                             {/* Scalable Hands */}
-                            <div className="absolute bg-white analog-hand rotate-[45deg]" style={{backgroundColor: w.color, width: `${Math.max(4, w.size*0.03)}px`, height: '25%', borderRadius: isModern ? '4px' : '10px'}}></div>
-                            <div className="absolute bg-white analog-hand rotate-[120deg]" style={{backgroundColor: w.color, opacity: 0.8, width: `${Math.max(3, w.size*0.02)}px`, height: '38%', borderRadius: isModern ? '4px' : '10px'}}></div>
-                            <div className="absolute bg-red-500 analog-hand rotate-[210deg]" style={{width: `${Math.max(2, w.size*0.015)}px`, height: '45%'}}></div>
-                            <div className="rounded-full bg-white z-10 border border-zinc-900 shadow-md" style={{width: `${Math.max(8, w.size*0.06)}px`, height: `${Math.max(8, w.size*0.06)}px`}}></div>
+                            <div className="absolute bg-white analog-hand rotate-[45deg]" style={{backgroundColor: w.color, width: `${Math.max(4, w.size*0.02)}px`, height: '25%', borderRadius: isModern ? '4px' : '10px'}}></div>
+                            <div className="absolute bg-white analog-hand rotate-[120deg]" style={{backgroundColor: w.color, opacity: 0.8, width: `${Math.max(3, w.size*0.015)}px`, height: '38%', borderRadius: isModern ? '4px' : '10px'}}></div>
+                            <div className="absolute bg-red-500 analog-hand rotate-[210deg]" style={{width: `${Math.max(2, w.size*0.01)}px`, height: '45%'}}></div>
+                            <div className="rounded-full bg-white z-10 border border-zinc-900 shadow-md" style={{width: `${Math.max(8, w.size*0.04)}px`, height: `${Math.max(8, w.size*0.04)}px`}}></div>
                         </div>
                     );
                 }
@@ -451,6 +549,7 @@
                     cals: { icon: <Flame size={w.size*1.2} />, val: liveCalories !== "--" ? liveCalories : "128" },
                     dist: { icon: <MapPin size={w.size*1.2} />, val: liveDistance !== "--" ? liveDistance : "2.6" },
                     batt: { icon: <Battery size={w.size*1.2} />, val: "85%" },
+                    weather: { icon: <CloudRain size={w.size*1.2} />, val: zipCode ? "72°" : "Set Zip" },
                 }[id];
 
                 const content = (
@@ -475,6 +574,15 @@
                     </div>
                 );
             };
+
+            // Helper to ensure Analog clocks are rendered first (bottom-most layer)
+            const sortedWidgets = Object.entries(widgets).sort(([idA, wA], [idB, wB]) => {
+                const aIsAnalog = wA.style.includes('analog');
+                const bIsAnalog = wB.style.includes('analog');
+                if (aIsAnalog && !bIsAnalog) return -1;
+                if (!aIsAnalog && bIsAnalog) return 1;
+                return 0;
+            });
 
             return (
                 <div className="min-h-screen flex flex-col">
@@ -528,10 +636,15 @@
                                         <h2 className="text-5xl font-extrabold tracking-tight text-white mb-3">Watch Face Studio</h2>
                                         <p className="text-zinc-400 text-lg max-w-2xl">Design your perfect layout with precision. Drag widgets, adjust styles, and deploy instantly.</p>
                                     </div>
-                                    <button onClick={handleDeploy} disabled={isUploading} className="bg-white text-black hover:bg-zinc-200 px-8 py-4 rounded-xl font-bold text-lg flex items-center gap-3 transition-transform hover:scale-105 active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.2)]">
-                                        {isUploading ? <RefreshCw className="animate-spin" size={24} /> : <UploadCloud size={24} />} 
-                                        {isUploading ? 'Transferring DFU...' : 'Deploy to Watch'}
-                                    </button>
+                                    <div className="flex gap-4">
+                                        <button onClick={() => { if(!bgImage) return alert('Upload background first'); downloadBinFile(previewCanvasRef.current); }} className="bg-zinc-900 text-zinc-300 hover:bg-zinc-800 border border-white/10 px-6 py-4 rounded-xl font-bold flex items-center gap-3 transition-transform hover:scale-105 shadow-lg">
+                                            <FileDown size={20} /> Export RAW .bin
+                                        </button>
+                                        <button onClick={handleDeploy} disabled={isUploading} className="bg-white text-black hover:bg-zinc-200 px-8 py-4 rounded-xl font-bold text-lg flex items-center gap-3 transition-transform hover:scale-105 active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.2)]">
+                                            {isUploading ? <RefreshCw className="animate-spin" size={24} /> : <UploadCloud size={24} />} 
+                                            {isUploading ? 'Compiling & Transferring...' : 'Deploy to Watch'}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -563,7 +676,7 @@
                                         <div className="bg-[#0A0A0C] border border-white/10 rounded-[2rem] p-6 shadow-2xl">
                                             <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-4 flex items-center gap-2"><Activity size={14}/> Enable Widgets</h3>
                                             <div className="space-y-1">
-                                                {Object.entries({ time: 'Time Display', date: 'Date & Day', steps: 'Step Counter', hr: 'Heart Rate', cals: 'Calories Burned', dist: 'Distance Tracker', batt: 'Battery Status' }).map(([id, label]) => (
+                                                {Object.entries({ time: 'Time Display', date: 'Date & Day', steps: 'Step Counter', hr: 'Heart Rate', cals: 'Calories Burned', dist: 'Distance Tracker', batt: 'Battery Status', weather: 'Weather Forecast' }).map(([id, label]) => (
                                                     <div key={id} onClick={() => toggleWidget(id)} className={`flex items-center justify-between p-3 rounded-xl cursor-pointer group transition-colors border ${widgets[id].visible ? 'bg-blue-500/10 border-blue-500/20' : 'hover:bg-white/5 border-transparent'}`}>
                                                         <span className={`text-sm font-semibold ${widgets[id].visible ? 'text-white' : 'text-zinc-500 group-hover:text-zinc-300'}`}>{label}</span>
                                                         <div className={`w-10 h-5 rounded-full relative transition-colors ${widgets[id].visible ? 'bg-blue-500' : 'bg-zinc-800'}`}>
@@ -590,16 +703,25 @@
                                                     </div>
                                                 )}
                                                 
-                                                {Object.entries(widgets).map(([id, w]) => {
+                                                {sortedWidgets.map(([id, w]) => {
                                                     if (!w.visible) return null;
+                                                    
+                                                    // Add an extra class to remove borders if it's analog face
+                                                    const isAnalog = w.style.includes('analog');
+                                                    const interactionClasses = `widget-layer ${selectedWidget === id ? 'widget-selected' : ''} ${isAnalog && selectedWidget !== id ? '!border-transparent' : ''}`;
+                                                    
                                                     return (
-                                                        <div key={id} onPointerDown={(e) => handlePointerDown(e, id)} className={`widget-layer ${selectedWidget === id ? 'widget-selected' : ''}`} style={{ left: w.x, top: w.y }}>
+                                                        <div key={id} onPointerDown={(e) => handlePointerDown(e, id)} className={interactionClasses} style={{ left: w.x, top: w.y }}>
                                                             {id === 'time' && renderTime(w)}
                                                             {id === 'date' && renderDate(w)}
-                                                            {['steps', 'hr', 'cals', 'dist', 'batt'].includes(id) && renderMetric(id, w)}
+                                                            {['steps', 'hr', 'cals', 'dist', 'batt', 'weather'].includes(id) && renderMetric(id, w)}
                                                         </div>
                                                     );
                                                 })}
+
+                                                {/* Smart Alignment Guides */}
+                                                {guides.x !== null && <div className="absolute top-0 bottom-0 w-[1px] bg-blue-500/80 z-40 pointer-events-none shadow-[0_0_5px_rgba(59,130,246,1)]" style={{ left: guides.x }}></div>}
+                                                {guides.y !== null && <div className="absolute left-0 right-0 h-[1px] bg-blue-500/80 z-40 pointer-events-none shadow-[0_0_5px_rgba(59,130,246,1)]" style={{ top: guides.y }}></div>}
                                             </div>
                                         </div>
 
@@ -636,7 +758,7 @@
                                                         <select value={widgets[selectedWidget].style} onChange={(e) => handleStyleChange(selectedWidget, e.target.value)} className="w-full bg-zinc-900 border border-white/10 hover:border-blue-500/50 rounded-xl px-4 py-3.5 text-sm text-white font-semibold cursor-pointer outline-none">
                                                             {selectedWidget === 'time' && <><option value="12h">12 Hour (06:23)</option><option value="12h_am">12 Hour + AM/PM</option><option value="12h_sec">12 Hour + Seconds</option><option value="24h">24 Hour (18:23)</option><option value="analog_classic">Analog Classic</option><option value="analog_modern">Analog Modern</option></>}
                                                             {selectedWidget === 'date' && <><option value="short">Short (04-04)</option><option value="long">Long (SAT 04-04)</option><option value="full">Full (2026-04-04)</option><option value="day_only">Day Only</option></>}
-                                                            {['steps', 'hr', 'cals', 'dist', 'batt'].includes(selectedWidget) && <><option value="pill_glass">Glass Pill</option><option value="pill_solid">Solid Pill</option><option value="pill_outline">Outline Pill</option><option value="icon_text">Icon + Text</option><option value="icon">Icon Only</option></>}
+                                                            {['steps', 'hr', 'cals', 'dist', 'batt', 'weather'].includes(selectedWidget) && <><option value="pill_glass">Glass Pill</option><option value="pill_solid">Solid Pill</option><option value="pill_outline">Outline Pill</option><option value="icon_text">Icon + Text</option><option value="icon">Icon Only</option></>}
                                                         </select>
                                                     </div>
 
@@ -658,18 +780,51 @@
                                                         <input type="range" min="10" max={widgets[selectedWidget].style.includes('analog') ? 420 : 120} value={widgets[selectedWidget].size} onChange={(e) => updateWidget(selectedWidget, 'size', parseInt(e.target.value))} className="w-full accent-blue-500 cursor-ew-resize" />
                                                     </div>
                                                     
-                                                    {widgets[selectedWidget].style.includes('analog') && (
-                                                        <button onClick={() => {
-                                                            updateWidget(selectedWidget, 'x', 210);
-                                                            updateWidget(selectedWidget, 'y', 210);
-                                                            updateWidget(selectedWidget, 'size', 390); // Scales to perfectly fit outer boundary
-                                                        }} className="w-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2">
-                                                            <span>⛶</span> Align to Bezel
-                                                        </button>
-                                                    )}
+                                                    {/* Alignment & Position Tools */}
+                                                    <div className="space-y-3 pt-4 border-t border-white/10 mt-4">
+                                                        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                                                            <MapPin size={12}/> Alignment & Position
+                                                        </label>
+                                                        
+                                                        {widgets[selectedWidget].style.includes('analog') ? (
+                                                            <button onClick={() => {
+                                                                updateWidget(selectedWidget, 'x', 210);
+                                                                updateWidget(selectedWidget, 'y', 210);
+                                                                updateWidget(selectedWidget, 'size', 420); // Scaled perfectly to 420x420 preview canvas
+                                                            }} className="w-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-sm flex items-center justify-center gap-2">
+                                                                <span>⛶</span> Align & Scale to Bezel
+                                                            </button>
+                                                        ) : (
+                                                            <div className="space-y-2">
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <button onClick={() => updateWidget(selectedWidget, 'x', 210)} className="bg-zinc-900 hover:bg-blue-500/20 text-zinc-300 hover:text-blue-400 border border-white/10 py-2.5 rounded-xl text-xs font-semibold transition-colors">Center Horiz.</button>
+                                                                    <button onClick={() => updateWidget(selectedWidget, 'y', 210)} className="bg-zinc-900 hover:bg-blue-500/20 text-zinc-300 hover:text-blue-400 border border-white/10 py-2.5 rounded-xl text-xs font-semibold transition-colors">Center Vert.</button>
+                                                                </div>
+                                                                
+                                                                {Object.keys(widgets).filter(id => id !== selectedWidget && widgets[id].visible).length > 0 && (
+                                                                    <div className="flex gap-2">
+                                                                        <select id="alignTargetSelect" className="flex-1 bg-zinc-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none cursor-pointer">
+                                                                            <option value="">Snap to widget...</option>
+                                                                            {Object.keys(widgets).filter(id => id !== selectedWidget && widgets[id].visible).map(id => (
+                                                                                <option key={id} value={id}>{id.toUpperCase()}</option>
+                                                                            ))}
+                                                                        </select>
+                                                                        <button onClick={() => {
+                                                                            const t = document.getElementById('alignTargetSelect').value;
+                                                                            if(t) updateWidget(selectedWidget, 'x', widgets[t].x);
+                                                                        }} className="bg-zinc-800 hover:bg-blue-600 text-white px-3 py-2 rounded-xl text-xs font-bold transition-colors">X</button>
+                                                                        <button onClick={() => {
+                                                                            const t = document.getElementById('alignTargetSelect').value;
+                                                                            if(t) updateWidget(selectedWidget, 'y', widgets[t].y);
+                                                                        }} className="bg-zinc-800 hover:bg-blue-600 text-white px-3 py-2 rounded-xl text-xs font-bold transition-colors">Y</button>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
 
-                                                    <div className="space-y-3">
-                                                        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Theme Palette (AI Extracted)</label>
+                                                    <div className="space-y-3 pt-4 border-t border-white/10 mt-4">
+                                                        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Theme Palette</label>
                                                         <div className="flex gap-3">
                                                             <div className="relative w-14 h-12 rounded-xl overflow-hidden border border-white/20">
                                                                 <input type="color" value={widgets[selectedWidget].color} onChange={(e) => updateWidget(selectedWidget, 'color', e.target.value)} className="absolute -top-2 -left-2 w-20 h-20 cursor-pointer" />
@@ -714,9 +869,14 @@
                                         <div className="text-[11px] font-bold text-zinc-500 uppercase tracking-widest mb-3 flex items-center gap-2"><Flame size={16} className="text-orange-500"/> Calories Burned</div>
                                         <div className="text-5xl font-extrabold text-white tracking-tighter">{liveCalories} <span className="text-xl font-bold text-zinc-500">kcal</span></div>
                                     </div>
-                                    <div className="bg-[#0A0A0C] border border-white/10 rounded-[2rem] p-8 relative overflow-hidden">
-                                        <div className="text-[11px] font-bold text-zinc-500 uppercase tracking-widest mb-3 flex items-center gap-2">Heart Rate</div>
-                                        <div className="text-5xl font-extrabold text-zinc-700 tracking-tighter">-- <span className="text-xl font-bold text-zinc-800">bpm</span></div>
+                                    
+                                    {/* Weather Settings */}
+                                    <div className="bg-[#0A0A0C] border border-white/10 rounded-[2rem] p-8 relative overflow-hidden flex flex-col justify-center">
+                                        <div className="text-[11px] font-bold text-zinc-500 uppercase tracking-widest mb-3 flex items-center gap-2"><CloudRain size={16} className="text-indigo-400"/> Weather Sync</div>
+                                        <div className="flex gap-2">
+                                            <input type="text" placeholder="Zip Code..." value={zipCode} onChange={(e) => setZipCode(e.target.value)} className="w-1/2 bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors font-medium placeholder:text-zinc-600" />
+                                            <button onClick={handleWeatherSync} className="flex-1 bg-zinc-800 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold transition-colors shadow-md border border-white/5 hover:border-white/10">Push Update</button>
+                                        </div>
                                     </div>
                                 </div>
 
