@@ -33,7 +33,7 @@
     <script type="text/babel">
         const { useState, useRef, useEffect } = React;
 
-        // --- Inline SVG Icons (Replacing lucide-react for zero-dependency deployment) ---
+        // --- Inline SVG Icons ---
         const Icon = ({ children, size = 24, className = "" }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                 {children}
@@ -54,6 +54,9 @@
         const Zap = (p) => <Icon {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></Icon>;
         const CheckCircle2 = (p) => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></Icon>;
         const XCircle = (p) => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></Icon>;
+        const Flame = (p) => <Icon {...p}><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></Icon>;
+        const MapPin = (p) => <Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></Icon>;
+        const BellRing = (p) => <Icon {...p}><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/><path d="M22 8c0-2.3-.8-4.3-2-6"/></Icon>;
 
         const K65PRO_SERVICES = [
             0xfee7,
@@ -80,6 +83,8 @@
 
             // Live Data State
             const [liveSteps, setLiveSteps] = useState("--");
+            const [liveDistance, setLiveDistance] = useState("--");
+            const [liveCalories, setLiveCalories] = useState("--");
 
             const addLog = (msg, type = 'info') => {
                 setLogs(prev => [{ time: new Date().toLocaleTimeString(), msg, type }, ...prev].slice(0, 50));
@@ -112,6 +117,8 @@
                         setBleServer(null);
                         addLog("Device disconnected.", 'error');
                         setLiveSteps("--");
+                        setLiveDistance("--");
+                        setLiveCalories("--");
                     });
 
                     const services = await server.getPrimaryServices();
@@ -122,8 +129,6 @@
                         try {
                             const characteristics = await service.getCharacteristics();
                             
-                            // BUGFIX: Web Bluetooth properties is not a standard object. 
-                            // Manually extract properties to ensure UI buttons render correctly.
                             chars = characteristics.map(c => {
                                 const props = [];
                                 if (c.properties.broadcast) props.push('broadcast');
@@ -150,8 +155,7 @@
                     setServicesList(srvList);
                     addLog(`Discovered ${services.length} services.`, 'success');
 
-                    // BUGFIX: Wrap Auto-Handshake in a timeout so it doesn't block UI renders 
-                    // and safely catches rejection if the watch drops connection immediately.
+                    // Auto-Handshake
                     setTimeout(async () => {
                         try {
                             if (!server.connected) return;
@@ -166,7 +170,6 @@
                             });
                             addLog("Handshake 1/3 complete (6487 bound)", "success");
 
-                            // Using explicit full UUID instead of short hex for reliability
                             const healthService = await server.getPrimaryService('0000fee7-0000-1000-8000-00805f9b34fb');
                             const healthNotifyChar = await healthService.getCharacteristic('0000fea1-0000-1000-8000-00805f9b34fb');
                             await healthNotifyChar.startNotifications();
@@ -175,13 +178,19 @@
                                  const bytes = new Uint8Array(v.buffer);
                                  addLog(`[fea1] Notify: ${Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`, 'info');
 
-                                 // Live Data Parser: Intercepting the Steps payload
-                                 // We identified that byte 0 is 0x07 for the activity packet
-                                 // Bytes 1, 2, and 3 represent the step count in Little-Endian format
-                                 if (bytes[0] === 0x07 && bytes.length >= 4) {
-                                     // Calculate steps: byte[1] + (byte[2] * 256) + (byte[3] * 65536)
+                                 // TELEMETRY PARSER (Based on 07 header)
+                                 if (bytes[0] === 0x07 && bytes.length >= 10) {
+                                     // Steps (Bytes 1-3, Little Endian)
                                      const parsedSteps = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16);
                                      setLiveSteps(parsedSteps);
+
+                                     // Distance (Bytes 4-6, Little Endian in meters)
+                                     const parsedDistanceMeters = bytes[4] | (bytes[5] << 8) | (bytes[6] << 16);
+                                     setLiveDistance((parsedDistanceMeters / 1000).toFixed(2));
+
+                                     // Calories (Bytes 7-9, Little Endian in fractional kcal)
+                                     const parsedCaloriesRaw = bytes[7] | (bytes[8] << 8) | (bytes[9] << 16);
+                                     setLiveCalories(Math.floor(parsedCaloriesRaw / 1000));
                                  }
                             });
                             addLog("Handshake 2/3 complete (fea1 bound)", "success");
@@ -198,7 +207,7 @@
                         } catch(e) {
                             addLog(`Handshake skipped/failed: ${e.message}`, "warn");
                         }
-                    }, 1000); // Wait 1 second after mapping to execute handshake
+                    }, 1000); 
                     
                 } catch (error) {
                     addLog(`Connection failed: ${error.message}`, 'error');
@@ -210,6 +219,29 @@
                     device.gatt.disconnect();
                 }
             };
+
+            // Device Control Handlers (Writing to 0000ff02)
+            const sendCommand = async (commandName, hexArray) => {
+                if (!bleServer) {
+                    addLog("Please connect watch first.", "error");
+                    return;
+                }
+                try {
+                    addLog(`Sending ${commandName} command...`, "info");
+                    const service = await bleServer.getPrimaryService('000001ff-3c17-d293-8e48-14fe2e4da212');
+                    const writeChar = await service.getCharacteristic('0000ff02-0000-1000-8000-00805f9b34fb');
+                    
+                    const bytes = new Uint8Array(hexArray);
+                    await writeChar.writeValue(bytes);
+                    addLog(`${commandName} packet sent successfully.`, "success");
+                } catch (e) {
+                    addLog(`${commandName} failed: ${e.message}`, "error");
+                    addLog(`Tip: We need Wireshark to verify the exact hex array.`, "warn");
+                }
+            };
+
+            const handleFindWatch = () => sendCommand("Find Watch", [0x04, 0x01]); // Common RTK Find command placeholder
+            const handleForceSync = () => sendCommand("Force Sync", [0x07, 0x01]); // Common RTK Sync command placeholder
 
             const handleImageUpload = (e) => {
                 const file = e.target.files[0];
@@ -227,38 +259,31 @@
                     
                     ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
                     
-                    // Modern glassmorphism UI overlay
                     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     
                     ctx.fillStyle = 'white';
                     ctx.textAlign = 'center';
                     
-                    // Time
                     ctx.shadowColor = 'rgba(0,0,0,0.5)';
                     ctx.shadowBlur = 10;
                     ctx.font = 'bold 84px -apple-system, sans-serif';
                     ctx.fillText('06:23', canvas.width / 2, 210);
                     
-                    // Date
                     ctx.shadowBlur = 4;
                     ctx.font = '500 22px -apple-system, sans-serif';
                     ctx.fillStyle = 'rgba(255,255,255,0.9)';
                     ctx.fillText('SAT, APR 4', canvas.width / 2, 250);
                     
-                    // Activity Pills (Simulated)
                     ctx.shadowBlur = 0;
-                    
-                    // Heart Rate Pill
-                    ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; // Red bg
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; 
                     ctx.roundRect(canvas.width / 2 - 110, 290, 100, 40, 20);
                     ctx.fill();
                     ctx.fillStyle = '#f87171';
                     ctx.font = '16px -apple-system, sans-serif';
                     ctx.fillText('❤ 89', canvas.width / 2 - 60, 316);
 
-                    // Steps Pill
-                    ctx.fillStyle = 'rgba(59, 130, 246, 0.2)'; // Blue bg
+                    ctx.fillStyle = 'rgba(59, 130, 246, 0.2)';
                     ctx.beginPath();
                     ctx.roundRect(canvas.width / 2 + 10, 290, 100, 40, 20);
                     ctx.fill();
@@ -443,56 +468,107 @@
                         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
                             
                             {/* Specs Card */}
-                            <div className="lg:col-span-3 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm">
-                            <div className="flex items-center gap-3 mb-8">
-                                <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><Info size={20} /></div>
-                                <h3 className="text-xl font-semibold text-zinc-100">Hardware Specifications</h3>
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-x-8 gap-y-6">
-                                <SpecItem label="Model Identifier" value="K65PRO" />
-                                <SpecItem label="MAC Address" value="FF:41:1D:03:D9:D2" monospace />
-                                <SpecItem label="Chipset Architecture" value="Realtek RTL8762x" />
-                                <SpecItem label="Display Panel" value="466x466 AMOLED" />
-                                <SpecItem label="Primary Protocol" value="BLE GATT" />
-                                <SpecItem label="Firmware Target" value="DFU OTA" />
-                            </div>
+                            <div className="lg:col-span-2 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm">
+                                <div className="flex items-center gap-3 mb-8">
+                                    <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><Info size={20} /></div>
+                                    <h3 className="text-xl font-semibold text-zinc-100">Hardware Info</h3>
+                                </div>
+                                
+                                <div className="space-y-6 flex-1">
+                                    <SpecItem label="Model Identifier" value="K65PRO" />
+                                    <SpecItem label="MAC Address" value="FF:41:1D:03:D9:D2" monospace />
+                                    <SpecItem label="Chipset Architecture" value="Realtek RTL8762x" />
+                                    <SpecItem label="Display Panel" value="466x466 AMOLED" />
+                                </div>
                             </div>
                             
                             {/* Live Data Capabilities Card */}
-                            <div className="lg:col-span-2 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm flex flex-col">
-                            <div className="flex items-center gap-3 mb-6">
-                                <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400"><Zap size={20} /></div>
-                                <h3 className="text-xl font-semibold text-zinc-100">Live Telemetry</h3>
-                            </div>
-                            <p className="text-sm text-zinc-400 mb-6">Realtime data intercepted from <span className="font-mono text-xs bg-zinc-900 px-1 rounded text-emerald-400">0000fea1</span>:</p>
-                            
-                            <div className="space-y-4 flex-1">
-                                <div className="flex gap-4 group bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/20">
-                                    <div className="mt-1 p-2.5 bg-emerald-500/20 rounded-xl text-emerald-400 border border-emerald-500/30">
-                                        <Activity size={24} />
+                            <div className="lg:col-span-3 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm flex flex-col">
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400"><Zap size={20} /></div>
+                                        <h3 className="text-xl font-semibold text-zinc-100">Live Telemetry</h3>
                                     </div>
-                                    <div className="flex flex-col justify-center">
-                                        <div className="text-xs font-bold text-emerald-500/80 uppercase tracking-widest">Step Counter</div>
-                                        <div className="text-3xl font-bold text-emerald-400 leading-none mt-1">
-                                            {liveSteps} <span className="text-sm font-medium text-emerald-500/50">steps</span>
+                                    <div className="text-[10px] font-mono text-emerald-500/70 bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/20">CHAR: 0000fea1</div>
+                                </div>
+                                
+                                {/* Telemetry Grid */}
+                                <div className="grid grid-cols-2 gap-4 flex-1">
+                                    
+                                    {/* Steps */}
+                                    <div className="flex gap-4 group bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/20 items-center">
+                                        <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-400 border border-emerald-500/30">
+                                            <Activity size={24} />
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-bold text-emerald-500/80 uppercase tracking-widest">Steps</div>
+                                            <div className="text-2xl font-bold text-emerald-400 leading-none mt-1">
+                                                {liveSteps} <span className="text-xs font-medium text-emerald-500/50"></span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
 
-                                <div className="flex gap-4 group bg-zinc-900/50 p-4 rounded-2xl border border-white/5 opacity-50 grayscale">
-                                    <div className="mt-1 p-2.5 bg-zinc-800 rounded-xl text-zinc-400 border border-white/10">
-                                        <Play size={24} />
-                                    </div>
-                                    <div className="flex flex-col justify-center">
-                                        <div className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Heart Rate</div>
-                                        <div className="text-xl font-bold text-zinc-400 leading-none mt-1">
-                                            -- <span className="text-sm font-medium text-zinc-600">bpm</span>
+                                    {/* Distance */}
+                                    <div className="flex gap-4 group bg-cyan-500/5 p-4 rounded-2xl border border-cyan-500/20 items-center">
+                                        <div className="p-2.5 bg-cyan-500/20 rounded-xl text-cyan-400 border border-cyan-500/30">
+                                            <MapPin size={24} />
                                         </div>
-                                        <div className="text-[10px] text-zinc-600 mt-1">Pending Payload Decode...</div>
+                                        <div>
+                                            <div className="text-[10px] font-bold text-cyan-500/80 uppercase tracking-widest">Distance</div>
+                                            <div className="text-2xl font-bold text-cyan-400 leading-none mt-1">
+                                                {liveDistance} <span className="text-xs font-medium text-cyan-500/50">km</span>
+                                            </div>
+                                        </div>
                                     </div>
+
+                                    {/* Calories */}
+                                    <div className="flex gap-4 group bg-orange-500/5 p-4 rounded-2xl border border-orange-500/20 items-center">
+                                        <div className="p-2.5 bg-orange-500/20 rounded-xl text-orange-400 border border-orange-500/30">
+                                            <Flame size={24} />
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-bold text-orange-500/80 uppercase tracking-widest">Calories</div>
+                                            <div className="text-2xl font-bold text-orange-400 leading-none mt-1">
+                                                {liveCalories} <span className="text-xs font-medium text-orange-500/50">kcal</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Heart Rate */}
+                                    <div className="flex gap-4 group bg-zinc-900/50 p-4 rounded-2xl border border-white/5 opacity-50 items-center">
+                                        <div className="p-2.5 bg-zinc-800 rounded-xl text-zinc-400 border border-white/10">
+                                            <Play size={24} />
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Heart Rate</div>
+                                            <div className="text-2xl font-bold text-zinc-400 leading-none mt-1">
+                                                -- <span className="text-xs font-medium text-zinc-600">bpm</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                 </div>
                             </div>
+                            
+                            {/* Active Controls Panel */}
+                            <div className="lg:col-span-5 bg-white/[0.02] border border-white/5 rounded-3xl p-8 backdrop-blur-sm">
+                                <div className="flex items-center gap-3 mb-6">
+                                    <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><Smartphone size={20} /></div>
+                                    <h3 className="text-xl font-semibold text-zinc-100">Device Controls</h3>
+                                </div>
+                                <p className="text-sm text-zinc-400 mb-6">Interact with the watch via GATT commands.</p>
+                                
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button onClick={handleForceSync} className="flex flex-col items-center justify-center gap-2 bg-zinc-900 hover:bg-zinc-800 border border-white/5 hover:border-indigo-500/50 transition-colors rounded-2xl p-4 group">
+                                        <RefreshCw size={24} className="text-zinc-400 group-hover:text-indigo-400" />
+                                        <span className="text-sm font-semibold text-zinc-300">Force Sync</span>
+                                    </button>
+                                    <button onClick={handleFindWatch} className="flex flex-col items-center justify-center gap-2 bg-zinc-900 hover:bg-zinc-800 border border-white/5 hover:border-pink-500/50 transition-colors rounded-2xl p-4 group">
+                                        <BellRing size={24} className="text-zinc-400 group-hover:text-pink-400" />
+                                        <span className="text-sm font-semibold text-zinc-300">Find Watch</span>
+                                    </button>
+                                </div>
+                                <div className="mt-4 text-[10px] text-zinc-600 text-center uppercase tracking-widest">Writes generic bytes to <span className="font-mono">0000ff02</span>. Needs Wireshark to map exact payload.</div>
                             </div>
 
                         </div>
